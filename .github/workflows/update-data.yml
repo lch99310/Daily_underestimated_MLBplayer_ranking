@@ -1,1 +1,42 @@
+name: Update MLB Data
 
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pybaseball pandas numpy
+
+      - name: Fetch Statcast data
+        run: python fetch_data.py
+        timeout-minutes: 30
+
+      - name: Build index.html
+        run: python build.py
+
+      - name: Commit and push updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add player_data.json index.html
+          git diff --staged --quiet || git commit -m "Update MLB data $(date -u +'%Y-%m-%d')"
+          git push
