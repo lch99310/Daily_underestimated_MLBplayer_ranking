@@ -35,7 +35,7 @@ def determine_season():
     year = today.year
     # MLB season typically starts late March
     # Try current year first
-    for try_year in [year, year - 1]:
+    for try_year in [year, year - 2]:
         print(f"[INFO] Trying season {try_year}...")
         try:
             df = statcast_batter_expected_stats(try_year, minPA=1)
