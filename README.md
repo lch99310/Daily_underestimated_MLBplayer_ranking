@@ -2,7 +2,7 @@
 
 Statcast-powered dashboard that identifies underestimated MLB players by comparing rolling wOBA against expected wOBA (xwOBA). Data is fetched from [Baseball Savant](https://baseballsavant.mlb.com) and refreshed daily via GitHub Actions.
 
-**Live dashboard:** `[https://<your-username>.github.io/<repo-name>/](https://lch99310.github.io/Daily_underestimated_MLBplayer_ranking)`
+**Live dashboard:** `https://lch99310.github.io/Daily_underestimated_MLBplayer_ranking`
 
 ## How it works
 
