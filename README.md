@@ -65,3 +65,7 @@ Statistically, hitters with this profile tend to regress toward their expected o
 ## How the Data Updates
 
 The dashboard refreshes automatically every day during the MLB season. Outside the season, the data stays frozen at the last available date. The data timestamp is shown in the header of the dashboard.
+
+---
+[![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey.svg)](https://creativecommons.org)
+
