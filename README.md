@@ -4,6 +4,8 @@ A dashboard that surfaces MLB hitters whose results lag behind their underlying 
 
 ![Dashboard overview](screenshots/hero.png)
 
+[Daily Underestimated MLB Player Dashboard](https://lch99310.github.io/Daily_underestimated_MLBplayer_ranking/)
+
 ## What This Does
 
 Every hitter in baseball has two versions of their offensive output:
