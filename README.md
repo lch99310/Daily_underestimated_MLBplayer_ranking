@@ -58,6 +58,8 @@ What's happening? His trend chart shows the gap between xwOBA (gold line) and wO
 
 Statistically, hitters with this profile tend to regress toward their expected output. O'Neill's contact quality is too good for his results to stay this depressed. He is a textbook underestimated player — his batting average says one thing, his Statcast metrics say another.
 
+![pic1](screenshots/pic1.png)
+
 ---
 [![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey.svg)](https://creativecommons.org)
 
