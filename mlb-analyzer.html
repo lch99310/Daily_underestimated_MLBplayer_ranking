@@ -221,6 +221,19 @@ td.stat-cell{font-family:var(--font-mono);font-size:.8rem;color:var(--text-secon
   .kpi-row{grid-template-columns:1fr}
   .woba-compare{flex-direction:column}
 }
+
+/* SEASON BADGE */
+.season-badge{display:inline-block;font-family:var(--font-mono);font-size:.6rem;font-weight:600;padding:1px 5px;border-radius:3px;letter-spacing:.5px;vertical-align:middle;margin-left:6px}
+.season-badge.current{background:var(--accent-green-dim);color:var(--accent-green);border:1px solid rgba(34,197,94,0.3)}
+.season-badge.fallback{background:var(--accent-blue-dim);color:var(--accent-blue);border:1px solid rgba(59,130,246,0.3)}
+
+/* TRANSITION BANNER */
+.transition-banner{background:linear-gradient(135deg,rgba(59,130,246,0.12),rgba(240,192,64,0.12));border:1px solid rgba(240,192,64,0.25);border-radius:var(--radius-md);padding:16px 22px;margin-top:20px;display:flex;align-items:flex-start;gap:14px}
+.transition-banner-icon{font-size:1.4rem;line-height:1;flex-shrink:0;margin-top:2px}
+.transition-banner-text{font-size:.85rem;color:var(--text-secondary);line-height:1.6}
+.transition-banner-text strong{color:var(--text-primary)}
+.transition-banner .legend-row{display:flex;gap:16px;margin-top:8px;flex-wrap:wrap}
+.transition-banner .legend-item{display:flex;align-items:center;gap:5px;font-size:.78rem}
 </style>
 </head>
 <body>
@@ -390,7 +403,16 @@ async function loadData() {
       if (!resp.ok) throw new Error('player_data.json not found (HTTP ' + resp.status + ')');
       data = await resp.json();
     }
-    META = { season: data.season, generated_at: data.generated_at, min_pa: data.min_pa, rolling_windows: data.rolling_windows };
+    META = {
+      season: data.season,
+      generated_at: data.generated_at,
+      min_pa: data.min_pa,
+      rolling_windows: data.rolling_windows,
+      mode: data.mode || 'current',
+      fallback_season: data.fallback_season || null,
+      current_season_players: data.current_season_players || data.total_players,
+      transition_threshold: data.transition_threshold || 10
+    };
     PLAYERS = data.players;
     init();
   } catch (e) {
@@ -451,6 +473,11 @@ function init() {
     return;
   }
 
+  // Show transition banner if in transition mode
+  if (META.mode === 'transition') {
+    renderTransitionBanner();
+  }
+
   renderKPIs();
   populateFilters();
   setupPAToggle();
@@ -502,10 +529,38 @@ function renderEmptyState() {
   document.getElementById('table-info').textContent = `No players have reached ${META.min_pa} plate appearances yet for the ${META.season} season. Data will appear once the season is underway.`;
 }
 
+function renderTransitionBanner() {
+  const banner = document.createElement('div');
+  banner.className = 'transition-banner';
+  const nCurr = META.current_season_players;
+  const nTotal = PLAYERS.length;
+  const nPrev = nTotal - nCurr;
+  banner.innerHTML = `
+    <div class="transition-banner-icon">&#9432;</div>
+    <div class="transition-banner-text">
+      <strong>Season Transition Mode</strong> — The ${META.season} season has just started. Showing <strong>${nCurr}</strong> player${nCurr !== 1 ? 's' : ''} with ${META.min_pa}+ PA from the new season, blended with <strong>${nPrev}</strong> player${nPrev !== 1 ? 's' : ''} from the ${META.fallback_season} season as a reference baseline. Once ${META.transition_threshold}+ players reach ${META.min_pa} PA in the new season, the view will automatically switch to ${META.season} data only.
+      <div class="legend-row">
+        <div class="legend-item"><span class="season-badge current">'${String(META.season).slice(-2)}</span> New season data</div>
+        <div class="legend-item"><span class="season-badge fallback">'${String(META.fallback_season).slice(-2)}</span> Previous season (reference)</div>
+      </div>
+    </div>
+  `;
+  document.getElementById('kpi-row').after(banner);
+}
+
+function seasonBadge(p) {
+  if (META.mode !== 'transition' || !p.data_season) return '';
+  const isCurrent = p.data_season === META.season;
+  const cls = isCurrent ? 'current' : 'fallback';
+  return `<span class="season-badge ${cls}">'${String(p.data_season).slice(-2)}</span>`;
+}
+
 // ═══════════════════════════════════════════
 // KPIs
 // ═══════════════════════════════════════════
 function renderKPIs() {
+  if (!PLAYERS.length) return;
+
   const sorted = [...PLAYERS].sort((a, b) => getDiff(a) - getDiff(b));
   const underest = PLAYERS.filter(p => getDiff(p) < 0);
   const avgDiff = PLAYERS.reduce((s, p) => s + getDiff(p), 0) / PLAYERS.length;
@@ -514,11 +569,17 @@ function renderKPIs() {
   const genDate = new Date(META.generated_at);
   const dateStr = genDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
+  const pctStr = PLAYERS.length > 0 ? Math.round(underest.length / PLAYERS.length * 100) + '%' : '0%';
+
+  const seasonLabel = META.mode === 'transition'
+    ? `${META.fallback_season}/${META.season}`
+    : `${META.season}`;
+
   document.getElementById('kpi-row').innerHTML = `
-    <div class="kpi"><div class="kpi-label">Players Tracked</div><div class="kpi-value">${PLAYERS.length}</div><div class="kpi-detail">Updated ${dateStr}</div></div>
-    <div class="kpi"><div class="kpi-label">Underestimated</div><div class="kpi-value" style="color:var(--accent-gold)">${underest.length}</div><div class="kpi-detail">${Math.round(underest.length / PLAYERS.length * 100)}% of tracked players</div></div>
+    <div class="kpi"><div class="kpi-label">Players Tracked</div><div class="kpi-value">${PLAYERS.length}</div><div class="kpi-detail">Updated ${dateStr} &middot; ${seasonLabel}</div></div>
+    <div class="kpi"><div class="kpi-label">Underestimated</div><div class="kpi-value" style="color:var(--accent-gold)">${underest.length}</div><div class="kpi-detail">${pctStr} of tracked players</div></div>
     <div class="kpi"><div class="kpi-label">Avg Differential</div><div class="kpi-value" style="color:${avgDiff < 0 ? 'var(--negative-mid)' : 'var(--positive-mid)'}">${avgDiff > 0 ? '+' : ''}${avgDiff.toFixed(3)}</div><div class="kpi-detail">${activeWindow} PA rolling window</div></div>
-    <div class="kpi"><div class="kpi-label">Most Underestimated</div><div class="kpi-value" style="font-size:1.2rem;color:var(--accent-red)">${most.name}</div><div class="kpi-detail">${getDiff(most) > 0 ? '+' : ''}${getDiff(most).toFixed(3)} diff &middot; ${most.team}</div></div>
+    <div class="kpi"><div class="kpi-label">Most Underestimated</div><div class="kpi-value" style="font-size:1.2rem;color:var(--accent-red)">${most.name}${seasonBadge(most)}</div><div class="kpi-detail">${getDiff(most) > 0 ? '+' : ''}${getDiff(most).toFixed(3)} diff &middot; ${most.team}</div></div>
   `;
 }
 
@@ -608,7 +669,7 @@ function renderTable() {
     const diffStr = diff !== null && diff !== undefined ? ((diff > 0 ? '+' : '') + diff.toFixed(3)) : '\u2014';
     return `<tr class="${sel}" data-pid="${p.player_id}">
       <td class="rank-cell">${i + 1}</td>
-      <td class="player-name">${p.name}</td>
+      <td class="player-name">${p.name}${seasonBadge(p)}</td>
       <td class="team-cell">${p.team}</td>
       <td class="stat-cell">${p.pa}</td>
       <td class="stat-cell">${fmt(p.wOBA, 3)}</td>
@@ -689,8 +750,14 @@ function renderDetailCard(p) {
 
   const savantUrl = `https://baseballsavant.mlb.com/savant-player/${p.player_id}`;
 
+  const seasonInfo = META.mode === 'transition' && p.data_season
+    ? (p.data_season === META.season
+      ? `<span class="season-badge current">${p.data_season} New Season</span>`
+      : `<span class="season-badge fallback">${p.data_season} Season (Reference)</span>`)
+    : '';
+
   document.getElementById('detail-info').innerHTML = `
-    <div class="detail-name">${p.name}</div>
+    <div class="detail-name">${p.name}${seasonInfo}</div>
     <div class="detail-meta">
       <span class="team-badge">${p.team}</span>
       <span>${p.pa} PA</span>
@@ -770,7 +837,7 @@ function renderTrendChart(p, win) {
 
   trendChart.setOption({
     backgroundColor: 'transparent',
-    title: { text: `Rolling ${win} PA Trend`, left: 10, top: 4, textStyle: { color: '#8a9bb8', fontSize: 13, fontFamily: 'Oswald', fontWeight: 400 } },
+    title: { text: `Rolling ${win} PA Trend` + (META.mode === 'transition' && p.data_season ? ` (${p.data_season} Season)` : ''), left: 10, top: 4, textStyle: { color: '#8a9bb8', fontSize: 13, fontFamily: 'Oswald', fontWeight: 400 } },
     tooltip: {
       trigger: 'axis', backgroundColor: '#0f1f38', borderColor: '#1a2d4d',
       textStyle: { color: '#e8ecf2', fontFamily: 'Source Sans 3', fontSize: 12 },
@@ -845,8 +912,14 @@ function initScatter() {
     name: p.name,
     diff: getDiff(p),
     team: p.team,
-    pa: p.pa
+    pa: p.pa,
+    data_season: p.data_season
   })).filter(d => d.value[0] != null && d.value[1] != null);
+
+  if (data.length === 0) {
+    scatterChart.setOption({ backgroundColor: 'transparent', title: { text: 'No data available', left: 'center', top: 'center', textStyle: { color: '#556a8a', fontSize: 14 } } });
+    return;
+  }
 
   const allVals = data.flatMap(d => d.value);
   const minV = Math.floor(Math.min(...allVals) * 100) / 100 - 0.01;
@@ -857,7 +930,7 @@ function initScatter() {
     tooltip: {
       trigger: 'item', backgroundColor: '#0f1f38', borderColor: '#1a2d4d',
       textStyle: { color: '#e8ecf2', fontFamily: 'Source Sans 3', fontSize: 12 },
-      formatter: p => `<strong>${p.data.name}</strong> (${p.data.team})<br>wOBA: ${p.data.value[1].toFixed(3)}<br>xwOBA: ${p.data.value[0].toFixed(3)}<br>Diff: ${p.data.diff > 0 ? '+' : ''}${p.data.diff.toFixed(3)}<br>PA: ${p.data.pa}`
+      formatter: p => `<strong>${p.data.name}</strong> (${p.data.team})${META.mode === 'transition' && p.data.data_season ? '<br>Season: ' + p.data.data_season : ''}<br>wOBA: ${p.data.value[1].toFixed(3)}<br>xwOBA: ${p.data.value[0].toFixed(3)}<br>Diff: ${p.data.diff > 0 ? '+' : ''}${p.data.diff.toFixed(3)}<br>PA: ${p.data.pa}`
     },
     grid: { top: 20, right: 30, bottom: 50, left: 60 },
     xAxis: {
@@ -908,6 +981,10 @@ function initHistogram() {
   histChart = echarts.init(el, null, { renderer: 'svg' });
 
   const diffs = PLAYERS.map(p => getDiff(p)).filter(d => d !== null && d !== undefined && isFinite(d));
+  if (diffs.length === 0) {
+    histChart.setOption({ backgroundColor: 'transparent', title: { text: 'No data available', left: 'center', top: 'center', textStyle: { color: '#556a8a', fontSize: 14 } } });
+    return;
+  }
   const step = 0.010;
   const minBin = Math.floor(Math.min(...diffs) / step) * step;
   const maxBin = Math.ceil(Math.max(...diffs) / step) * step;
