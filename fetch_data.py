@@ -30,18 +30,23 @@ MIN_PA = 50
 
 
 def determine_season():
-    """Try 2025 first; fall back to 2024 if no data."""
+    """Try current year first; fall back to previous years if insufficient data."""
     today = date.today()
     year = today.year
     # MLB season typically starts late March
-    # Try current year first
+    # Try current year first, but require enough players meeting MIN_PA
     for try_year in [year, year - 1]:
         print(f"[INFO] Trying season {try_year}...")
         try:
             df = statcast_batter_expected_stats(try_year, minPA=1)
             if df is not None and len(df) > 50:
-                print(f"[INFO] Found {len(df)} batters for {try_year}")
-                return try_year
+                # Check if enough players actually meet MIN_PA threshold
+                qualified = df[df["pa"] >= MIN_PA] if "pa" in df.columns else df
+                if len(qualified) >= 10:
+                    print(f"[INFO] Found {len(df)} batters ({len(qualified)} with {MIN_PA}+ PA) for {try_year}")
+                    return try_year
+                else:
+                    print(f"[INFO] Found {len(df)} batters but only {len(qualified)} with {MIN_PA}+ PA for {try_year}, skipping")
         except Exception as e:
             print(f"[WARN] No data for {try_year}: {e}")
     # Hard fallback

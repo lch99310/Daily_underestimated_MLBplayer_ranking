@@ -444,6 +444,13 @@ function init() {
   const heroDateStr = genDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   document.getElementById('hero-date').textContent = `Data: ${heroDateStr}`;
 
+  // Handle empty data (e.g. early season, no players with enough PA yet)
+  if (!PLAYERS || PLAYERS.length === 0) {
+    renderEmptyState();
+    setupScrollObservers();
+    return;
+  }
+
   renderKPIs();
   populateFilters();
   setupPAToggle();
@@ -472,6 +479,27 @@ function init() {
       }
     }
   }, 400);
+}
+
+function renderEmptyState() {
+  const genDate = new Date(META.generated_at);
+  const dateStr = genDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  document.getElementById('kpi-row').innerHTML = `
+    <div class="kpi"><div class="kpi-label">Players Tracked</div><div class="kpi-value">0</div><div class="kpi-detail">Updated ${dateStr}</div></div>
+    <div class="kpi"><div class="kpi-label">Season</div><div class="kpi-value" style="color:var(--accent-gold)">${META.season}</div><div class="kpi-detail">Early season — collecting data</div></div>
+    <div class="kpi"><div class="kpi-label">Min PA Required</div><div class="kpi-value" style="color:var(--accent-blue)">${META.min_pa}</div><div class="kpi-detail">Plate appearances threshold</div></div>
+    <div class="kpi"><div class="kpi-label">Status</div><div class="kpi-value" style="font-size:1.2rem;color:var(--accent-red)">Awaiting Data</div><div class="kpi-detail">Check back soon</div></div>
+  `;
+
+  const rankSec = document.getElementById('rankings');
+  rankSec.classList.add('visible');
+  const rankHeader = rankSec.querySelector('.section-header');
+  if (rankHeader) rankHeader.classList.add('visible');
+
+  const tbody = document.getElementById('table-body');
+  tbody.innerHTML = '';
+  document.getElementById('table-info').textContent = `No players have reached ${META.min_pa} plate appearances yet for the ${META.season} season. Data will appear once the season is underway.`;
 }
 
 // ═══════════════════════════════════════════
