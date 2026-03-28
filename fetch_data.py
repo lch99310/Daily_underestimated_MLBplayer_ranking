@@ -4,8 +4,11 @@ MLB Underestimated Player Analyzer — Data Pipeline
 Fetches real Statcast data from Baseball Savant via pybaseball,
 computes rolling wOBA/xwOBA differentials, and outputs player_data.json.
 
-Supports "transition mode" at the start of a new season: blends previous
-season data with early new-season data until enough players qualify.
+Supports cross-season rolling windows at the start of a new season:
+pitch-level data from both seasons is concatenated so rolling windows
+physically span the season boundary (e.g. last 30 PA from 2025 + first
+20 PA from 2026 = 50 PA window).  Once enough players qualify in the
+new season alone, the pipeline switches to single-season mode.
 """
 
 import json
@@ -28,24 +31,24 @@ OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "player_data.json")
 
 ROLLING_WINDOWS = [50, 100, 250]
-TREND_POINTS = 20  # number of points in trend arrays (more for retro visualization)
+TREND_POINTS = 20
 MIN_PA = 50
-TRANSITION_THRESHOLD = 10  # min players with MIN_PA in new season to exit transition
+TRANSITION_THRESHOLD = 10  # new-season players needed to exit transition
 
+
+# ═══════════════════════════════════════════════════════════════════
+# SEASON MODE DETECTION
+# ═══════════════════════════════════════════════════════════════════
 
 def determine_season_mode():
     """
-    Determine data mode:
-      - "current": enough players in current year, use it alone
-      - "transition": new season has started but <TRANSITION_THRESHOLD players
-        meet MIN_PA — blend previous season as fallback
-      - "fallback": no current year data at all, use previous year
-    Returns (mode, current_year) or (mode, current_year) where mode encodes behaviour.
+    Returns (mode, year):
+      "current", year  — enough players qualify in year, single-season
+      "transition", year — new season started, <TRANSITION_THRESHOLD qualify
     """
     today = date.today()
     year = today.year
 
-    # Try fetching current year stats
     curr_df = None
     try:
         curr_df = statcast_batter_expected_stats(year, minPA=1)
@@ -54,39 +57,38 @@ def determine_season_mode():
 
     if curr_df is not None and len(curr_df) > 0:
         qualified = curr_df[curr_df["pa"] >= MIN_PA] if "pa" in curr_df.columns else pd.DataFrame()
-        n_qualified = len(qualified)
-
-        if n_qualified >= TRANSITION_THRESHOLD:
-            print(f"[INFO] {n_qualified} players with {MIN_PA}+ PA in {year} — full current season mode")
+        n = len(qualified)
+        if n >= TRANSITION_THRESHOLD:
+            print(f"[INFO] {n} players with {MIN_PA}+ PA in {year} — single-season mode")
             return "current", year
         else:
-            print(f"[INFO] Only {n_qualified} players with {MIN_PA}+ PA in {year} — transition mode")
+            print(f"[INFO] Only {n} players with {MIN_PA}+ PA in {year} — transition mode")
             return "transition", year
 
-    # No current year data at all, try previous years
-    for fallback_year in [year - 1, year - 2]:
+    for fallback in [year - 1, year - 2]:
         try:
-            df = statcast_batter_expected_stats(fallback_year, minPA=1)
+            df = statcast_batter_expected_stats(fallback, minPA=1)
             if df is not None and len(df) > 50:
-                print(f"[INFO] No {year} data available, using {fallback_year}")
-                return "current", fallback_year
+                print(f"[INFO] No {year} data, using {fallback}")
+                return "current", fallback
         except Exception as e:
-            print(f"[WARN] No data for {fallback_year}: {e}")
+            print(f"[WARN] No data for {fallback}: {e}")
 
     print("[INFO] Hard fallback to 2024")
     return "current", 2024
 
 
+# ═══════════════════════════════════════════════════════════════════
+# DATA FETCHING
+# ═══════════════════════════════════════════════════════════════════
+
 def get_season_dates(year):
-    """Return approximate season start/end for fetching pitch data."""
-    # Regular season windows
     start = f"{year}-03-20"
     end = min(f"{year}-10-05", date.today().strftime("%Y-%m-%d"))
     return start, end
 
 
 def fetch_expected_stats(year):
-    """Fetch season-level wOBA, xwOBA, xBA, xSLG for all batters."""
     print(f"  Fetching expected statistics for {year}...")
     df = statcast_batter_expected_stats(year, minPA=1)
     print(f"  -> {len(df)} batters retrieved")
@@ -94,7 +96,6 @@ def fetch_expected_stats(year):
 
 
 def fetch_ev_barrels(year):
-    """Fetch exit velocity, hard hit %, barrel % for all batters."""
     print(f"  Fetching exit velocity & barrels for {year}...")
     df = statcast_batter_exitvelo_barrels(year, minBBE=1)
     print(f"  -> {len(df)} batters retrieved")
@@ -102,70 +103,62 @@ def fetch_ev_barrels(year):
 
 
 def fetch_pitch_level(year):
-    """Fetch pitch-level Statcast data for the full season."""
     start, end = get_season_dates(year)
     print(f"  Fetching pitch-level data from {start} to {end}...")
-    print("  (this may take several minutes due to the volume of data)")
+    print("  (this may take several minutes)")
     df = statcast(start_dt=start, end_dt=end)
     print(f"  -> {len(df)} total pitches retrieved")
     return df
 
 
 def extract_batter_teams(pitch_df):
-    """
-    Derive each batter's most recent team from pitch-level data.
-    Top of inning = away team batting, bottom = home team batting.
-    Returns dict: {batter_id: team_abbrev}
-    """
     print("  Extracting batter team affiliations...")
     pa_df = pitch_df[pitch_df["events"].notna()].copy()
     pa_df["bat_team"] = pa_df.apply(
         lambda r: r["away_team"] if r["inning_topbot"] == "Top" else r["home_team"],
         axis=1,
     )
-    # Use most recent game to determine current team
     pa_df = pa_df.sort_values("game_date")
     team_map = pa_df.groupby("batter")["bat_team"].last().to_dict()
     print(f"  -> {len(team_map)} batter-team mappings extracted")
     return team_map
 
 
+# ═══════════════════════════════════════════════════════════════════
+# ROLLING METRIC COMPUTATION (supports cross-season)
+# ═══════════════════════════════════════════════════════════════════
+
 def compute_rolling_metrics(pitch_df):
     """
-    From pitch-level data, compute rolling wOBA/xwOBA for each batter
-    at 50/100/250 PA windows.
-    Returns a dict keyed by batter ID with rolling data.
+    Compute rolling wOBA/xwOBA for every batter with MIN_PA+ plate appearances.
+
+    If pitch_df contains a ``data_season`` column (cross-season concatenated
+    data), the output includes per-window ``trend_seasons`` arrays and
+    per-batter ``new_season_pa`` / ``cross_season`` flags.
     """
     print("  Computing rolling metrics...")
 
-    # Filter to plate-appearance-ending events only
     pa_df = pitch_df[pitch_df["events"].notna()].copy()
     pa_df = pa_df.sort_values(["game_date", "at_bat_number"]).reset_index(drop=True)
 
-    # Ensure numeric columns
+    has_season_col = "data_season" in pa_df.columns
+
     pa_df["woba_value"] = pd.to_numeric(pa_df["woba_value"], errors="coerce").fillna(0)
     pa_df["woba_denom"] = pd.to_numeric(pa_df["woba_denom"], errors="coerce").fillna(0)
     pa_df["estimated_woba_using_speedangle"] = pd.to_numeric(
         pa_df["estimated_woba_using_speedangle"], errors="coerce"
     )
-
-    # For xwOBA: use estimated_woba_using_speedangle for batted balls,
-    # fall back to woba_value for non-batted-ball events (K, BB, HBP)
     pa_df["xwoba_value"] = pa_df["estimated_woba_using_speedangle"].fillna(
         pa_df["woba_value"]
     )
 
-    # Group by batter
-    batter_col = "batter"
     results = {}
-    grouped = pa_df.groupby(batter_col)
+    grouped = pa_df.groupby("batter")
     total_batters = len(grouped)
     processed = 0
 
     for batter_id, batter_pa in grouped:
-        batter_pa = batter_pa.sort_values(["game_date", "at_bat_number"]).reset_index(
-            drop=True
-        )
+        batter_pa = batter_pa.sort_values(["game_date", "at_bat_number"]).reset_index(drop=True)
         total_pa = len(batter_pa)
 
         if total_pa < MIN_PA:
@@ -173,11 +166,22 @@ def compute_rolling_metrics(pitch_df):
 
         batter_result = {"total_pa": total_pa, "windows": {}}
 
+        # Season tracking
+        if has_season_col:
+            season_arr = batter_pa["data_season"].values
+            unique_seasons = sorted(set(int(s) for s in season_arr))
+            if len(unique_seasons) > 1:
+                new_season = max(unique_seasons)
+                batter_result["new_season_pa"] = int((season_arr == new_season).sum())
+                batter_result["cross_season"] = True
+            else:
+                batter_result["new_season_pa"] = total_pa
+                batter_result["cross_season"] = False
+
         for window in ROLLING_WINDOWS:
             if total_pa < window:
                 continue
 
-            # Compute rolling sums
             woba_num = batter_pa["woba_value"].rolling(window=window, min_periods=window).sum()
             woba_den = batter_pa["woba_denom"].rolling(window=window, min_periods=window).sum()
             xwoba_num = batter_pa["xwoba_value"].rolling(window=window, min_periods=window).sum()
@@ -186,12 +190,10 @@ def compute_rolling_metrics(pitch_df):
             rolling_xwoba = xwoba_num / woba_den
             rolling_diff = rolling_woba - rolling_xwoba
 
-            # Current (latest) values
             latest_woba = rolling_woba.iloc[-1] if not pd.isna(rolling_woba.iloc[-1]) else None
             latest_xwoba = rolling_xwoba.iloc[-1] if not pd.isna(rolling_xwoba.iloc[-1]) else None
             latest_diff = rolling_diff.iloc[-1] if not pd.isna(rolling_diff.iloc[-1]) else None
 
-            # Trend: last TREND_POINTS valid values, evenly spaced
             valid_woba = rolling_woba.dropna()
             valid_xwoba = rolling_xwoba.dropna()
 
@@ -202,11 +204,13 @@ def compute_rolling_metrics(pitch_df):
             elif len(valid_woba) > 0:
                 trend_woba = [round(float(v), 3) for v in valid_woba.tolist()]
                 trend_xwoba = [round(float(v), 3) for v in valid_xwoba.tolist()]
+                indices = list(range(len(valid_woba)))
             else:
                 trend_woba = []
                 trend_xwoba = []
+                indices = []
 
-            batter_result["windows"][str(window)] = {
+            win_result = {
                 "rolling_woba": round(float(latest_woba), 3) if latest_woba is not None else None,
                 "rolling_xwoba": round(float(latest_xwoba), 3) if latest_xwoba is not None else None,
                 "diff_rolling_OBA": round(float(latest_diff), 3) if latest_diff is not None else None,
@@ -214,6 +218,14 @@ def compute_rolling_metrics(pitch_df):
                 "trend_xwoba": trend_xwoba,
                 "trend_diff": [round(float(trend_woba[i] - trend_xwoba[i]), 3) for i in range(len(trend_woba))],
             }
+
+            # Cross-season: record which season each trend point belongs to
+            if has_season_col and len(indices) > 0:
+                valid_idx = valid_woba.index.values  # original PA indices
+                sampled_pa_idx = [valid_idx[i] for i in indices]
+                win_result["trend_seasons"] = [int(season_arr[pi]) for pi in sampled_pa_idx]
+
+            batter_result["windows"][str(window)] = win_result
 
         if batter_result["windows"]:
             results[int(batter_id)] = batter_result
@@ -226,47 +238,18 @@ def compute_rolling_metrics(pitch_df):
     return results
 
 
-def fetch_season_data(year):
-    """Fetch all data sources for a given season. Returns a dict with all components."""
-    print(f"\n{'='*50}")
-    print(f"  Fetching {year} season data")
-    print(f"{'='*50}")
-
-    expected_df = fetch_expected_stats(year)
-
-    try:
-        ev_df = fetch_ev_barrels(year)
-    except Exception as e:
-        print(f"  [WARN] Could not fetch EV/barrel data for {year}: {e}")
-        ev_df = None
-
-    rolling_data = {}
-    team_map = {}
-    try:
-        pitch_df = fetch_pitch_level(year)
-        team_map = extract_batter_teams(pitch_df)
-        rolling_data = compute_rolling_metrics(pitch_df)
-    except Exception as e:
-        print(f"  [WARN] Could not fetch/process pitch-level data for {year}: {e}")
-        print(f"  [WARN] Will use season-level stats only (no rolling windows)")
-
-    return {
-        "expected_df": expected_df,
-        "ev_df": ev_df,
-        "rolling_data": rolling_data,
-        "team_map": team_map,
-    }
-
+# ═══════════════════════════════════════════════════════════════════
+# PLAYER BUILDER (shared by both modes)
+# ═══════════════════════════════════════════════════════════════════
 
 NAME_COL = "last_name, first_name"
 
 
 def build_player(row, ev_df, rolling_data, team_map):
-    """Build a single player dict from a row of expected stats + auxiliary data."""
+    """Build a single player dict from expected-stats row + auxiliary data."""
     player_id = int(row.get("player_id", 0))
     pa = int(row.get("pa", 0))
 
-    # Parse the combined name column: "Lastname, Firstname" -> "Firstname Lastname"
     raw_name = str(row.get(NAME_COL, "")).strip()
     if "," in raw_name:
         parts = raw_name.split(",", 1)
@@ -274,7 +257,6 @@ def build_player(row, ev_df, rolling_data, team_map):
     else:
         name = raw_name
 
-    # Get team from pitch-level data
     team = team_map.get(player_id, "")
 
     player = {
@@ -290,7 +272,6 @@ def build_player(row, ev_df, rolling_data, team_map):
         "xSLG": safe_round(row.get("est_slg"), 3),
     }
 
-    # Merge exit velocity / barrel data
     if ev_df is not None:
         ev_row = ev_df[ev_df["player_id"] == player_id]
         if len(ev_row) > 0:
@@ -301,21 +282,19 @@ def build_player(row, ev_df, rolling_data, team_map):
             player["barrel_pct"] = safe_round(ev_row.get("brl_percent"), 1)
             player["max_exit_velocity"] = safe_round(ev_row.get("max_hit_speed"), 1)
 
-    # Merge rolling data
     if player_id in rolling_data:
-        player["rolling"] = rolling_data[player_id]["windows"]
-        player["total_pa_events"] = rolling_data[player_id]["total_pa"]
+        rd = rolling_data[player_id]
+        player["rolling"] = rd["windows"]
+        player["total_pa_events"] = rd["total_pa"]
 
-        # Use 100 PA window as the primary diff if available, else 50
         for w in [100, 50, 250]:
             wkey = str(w)
-            if wkey in rolling_data[player_id]["windows"]:
-                wd = rolling_data[player_id]["windows"][wkey]
+            if wkey in rd["windows"]:
+                wd = rd["windows"][wkey]
                 if wd.get("diff_rolling_OBA") is not None:
                     player["diff_rolling_OBA"] = wd["diff_rolling_OBA"]
                     break
 
-    # Fallback: use season-level diff if no rolling diff
     if "diff_rolling_OBA" not in player:
         season_diff = row.get("est_woba_minus_woba_diff")
         if pd.notna(season_diff):
@@ -326,10 +305,13 @@ def build_player(row, ev_df, rolling_data, team_map):
     return player
 
 
-def build_output(expected_df, ev_df, rolling_data, team_map, year):
-    """Merge all data sources and produce final JSON (single-season mode)."""
-    print("[BUILD] Building output JSON (current season mode)...")
+# ═══════════════════════════════════════════════════════════════════
+# OUTPUT BUILDERS
+# ═══════════════════════════════════════════════════════════════════
 
+def build_output(expected_df, ev_df, rolling_data, team_map, year):
+    """Single-season output."""
+    print("[BUILD] Building output (single-season mode)...")
     players = []
     for _, row in expected_df.iterrows():
         if int(row.get("pa", 0)) < MIN_PA:
@@ -339,7 +321,6 @@ def build_output(expected_df, ev_df, rolling_data, team_map, year):
         players.append(player)
 
     players.sort(key=lambda p: p.get("diff_rolling_OBA", 0))
-
     return {
         "generated_at": datetime.now().isoformat(),
         "mode": "current",
@@ -351,62 +332,62 @@ def build_output(expected_df, ev_df, rolling_data, team_map, year):
     }
 
 
-def build_transition_output(prev_data, prev_year, curr_data, curr_year):
+def build_transition_output(prev_expected, prev_ev, prev_year,
+                            curr_expected, curr_ev, curr_year,
+                            rolling_data, team_map):
     """
-    Build output in transition mode:
-    - Players who meet MIN_PA in the new season → use new season data (data_season = curr_year)
-    - Remaining players from previous season → keep prev data (data_season = prev_year)
+    Cross-season transition output.
+    Rolling metrics come from concatenated pitch data (cross-season).
+    Season-level stats come from the most appropriate single season.
     """
-    print("[BUILD] Building output JSON (transition mode)...")
+    print("[BUILD] Building output (transition mode — cross-season rolling)...")
 
-    curr_expected = curr_data["expected_df"]
-    curr_ev = curr_data["ev_df"]
-    curr_rolling = curr_data["rolling_data"]
-    curr_teams = curr_data["team_map"]
-
-    prev_expected = prev_data["expected_df"]
-    prev_ev = prev_data["ev_df"]
-    prev_rolling = prev_data["rolling_data"]
-    prev_teams = prev_data["team_map"]
-
-    # Identify players who qualify in the current season
-    curr_qualified_ids = set()
+    # Lookup dicts for season-level stats
+    curr_lookup = {}
     if curr_expected is not None and len(curr_expected) > 0:
         for _, row in curr_expected.iterrows():
-            if int(row.get("pa", 0)) >= MIN_PA:
-                curr_qualified_ids.add(int(row.get("player_id", 0)))
+            curr_lookup[int(row["player_id"])] = row
+
+    prev_lookup = {}
+    for _, row in prev_expected.iterrows():
+        prev_lookup[int(row["player_id"])] = row
 
     players = []
-    seen_ids = set()
 
-    # 1) Add current-season qualified players
-    if curr_expected is not None:
-        for _, row in curr_expected.iterrows():
-            pid = int(row.get("player_id", 0))
-            if pid not in curr_qualified_ids:
-                continue
-            player = build_player(row, curr_ev, curr_rolling, curr_teams)
-            player["data_season"] = curr_year
-            players.append(player)
-            seen_ids.add(pid)
-
-    # 2) Add previous-season players (as fallback)
-    for _, row in prev_expected.iterrows():
-        pid = int(row.get("player_id", 0))
-        if pid in seen_ids or int(row.get("pa", 0)) < MIN_PA:
+    # Include every batter that has rolling data (MIN_PA+ across seasons)
+    for pid, roll_info in rolling_data.items():
+        # Pick season-level stats: prefer current season if they have MIN_PA there
+        if pid in curr_lookup and int(curr_lookup[pid].get("pa", 0)) >= MIN_PA:
+            row = curr_lookup[pid]
+            ev_df = curr_ev
+            data_season = curr_year
+        elif pid in prev_lookup:
+            row = prev_lookup[pid]
+            ev_df = prev_ev
+            data_season = prev_year
+        elif pid in curr_lookup:
+            # Has some current season data but not MIN_PA
+            row = curr_lookup[pid]
+            ev_df = curr_ev
+            data_season = curr_year
+        else:
             continue
-        player = build_player(row, prev_ev, prev_rolling, prev_teams)
-        player["data_season"] = prev_year
+
+        player = build_player(row, ev_df, rolling_data, team_map)
+        player["data_season"] = data_season
+
+        if roll_info.get("cross_season"):
+            player["cross_season"] = True
+            player["new_season_pa"] = roll_info.get("new_season_pa", 0)
+
         players.append(player)
-        seen_ids.add(pid)
 
     players.sort(key=lambda p: p.get("diff_rolling_OBA", 0))
 
-    n_curr = len(curr_qualified_ids)
-    n_prev = len(players) - n_curr
+    n_curr = sum(1 for p in players if p.get("data_season") == curr_year)
 
-    print(f"  -> {n_curr} players from {curr_year} (new season)")
-    print(f"  -> {n_prev} players from {prev_year} (fallback)")
+    print(f"  -> {n_curr} players with {curr_year} season-level stats")
+    print(f"  -> {len(players) - n_curr} players with {prev_year} season-level stats")
     print(f"  -> {len(players)} total")
 
     return {
@@ -424,7 +405,6 @@ def build_transition_output(prev_data, prev_year, curr_data, curr_year):
 
 
 def safe_round(val, decimals=3):
-    """Safely round a value, handling None/NaN."""
     if val is None or (isinstance(val, float) and np.isnan(val)):
         return None
     try:
@@ -432,6 +412,10 @@ def safe_round(val, decimals=3):
     except (TypeError, ValueError):
         return None
 
+
+# ═══════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════
 
 def main():
     print("=" * 60)
@@ -442,29 +426,104 @@ def main():
 
     if mode == "transition":
         prev_year = year - 1
-        print(f"\n>>> TRANSITION MODE: blending {prev_year} (fallback) + {year} (new season)\n")
+        print(f"\n>>> TRANSITION MODE: cross-season rolling {prev_year} → {year}\n")
 
-        # Fetch previous season (full dataset as fallback)
-        prev_data = fetch_season_data(prev_year)
+        # ---- previous season ----
+        print(f"\n{'='*50}")
+        print(f"  Fetching {prev_year} season data (fallback)")
+        print(f"{'='*50}")
+        prev_expected = fetch_expected_stats(prev_year)
+        try:
+            prev_ev = fetch_ev_barrels(prev_year)
+        except Exception as e:
+            print(f"  [WARN] No EV data for {prev_year}: {e}")
+            prev_ev = None
+        try:
+            prev_pitch = fetch_pitch_level(prev_year)
+        except Exception as e:
+            print(f"  [WARN] No pitch data for {prev_year}: {e}")
+            prev_pitch = pd.DataFrame()
 
-        # Fetch current season (may be sparse early on)
-        curr_data = fetch_season_data(year)
+        # ---- current season ----
+        print(f"\n{'='*50}")
+        print(f"  Fetching {year} season data (current)")
+        print(f"{'='*50}")
+        try:
+            curr_expected = fetch_expected_stats(year)
+        except Exception as e:
+            print(f"  [WARN] No expected stats for {year}: {e}")
+            curr_expected = pd.DataFrame()
+        try:
+            curr_ev = fetch_ev_barrels(year)
+        except Exception as e:
+            print(f"  [WARN] No EV data for {year}: {e}")
+            curr_ev = None
+        try:
+            curr_pitch = fetch_pitch_level(year)
+        except Exception as e:
+            print(f"  [WARN] No pitch data for {year}: {e}")
+            curr_pitch = pd.DataFrame()
 
-        # Build merged output
-        output = build_transition_output(prev_data, prev_year, curr_data, year)
+        # ---- concatenate pitch data with season markers ----
+        print("\n  Concatenating pitch data across seasons...")
+        frames = []
+        if len(prev_pitch) > 0:
+            p = prev_pitch.copy()
+            p["data_season"] = prev_year
+            frames.append(p)
+        if len(curr_pitch) > 0:
+            c = curr_pitch.copy()
+            c["data_season"] = year
+            frames.append(c)
 
-    else:
-        # Normal single-season mode
-        print(f"\n>>> Using season: {year}\n")
-        season_data = fetch_season_data(year)
-        output = build_output(
-            season_data["expected_df"],
-            season_data["ev_df"],
-            season_data["rolling_data"],
-            season_data["team_map"],
-            year,
+        if frames:
+            combined_pitch = pd.concat(frames, ignore_index=True)
+            print(f"  -> {len(combined_pitch)} total pitches across both seasons")
+        else:
+            combined_pitch = pd.DataFrame()
+
+        # ---- team mappings (prefer current season) ----
+        team_map = {}
+        if len(prev_pitch) > 0:
+            team_map.update(extract_batter_teams(prev_pitch))
+        if len(curr_pitch) > 0:
+            team_map.update(extract_batter_teams(curr_pitch))
+
+        # ---- cross-season rolling metrics ----
+        rolling_data = {}
+        if len(combined_pitch) > 0:
+            print("\n  Computing cross-season rolling metrics...")
+            rolling_data = compute_rolling_metrics(combined_pitch)
+
+        # ---- build output ----
+        output = build_transition_output(
+            prev_expected, prev_ev, prev_year,
+            curr_expected, curr_ev, year,
+            rolling_data, team_map,
         )
 
+    else:
+        # ---- single-season mode ----
+        print(f"\n>>> Using season: {year}\n")
+        expected_df = fetch_expected_stats(year)
+        try:
+            ev_df = fetch_ev_barrels(year)
+        except Exception as e:
+            print(f"  [WARN] No EV data: {e}")
+            ev_df = None
+
+        rolling_data = {}
+        team_map = {}
+        try:
+            pitch_df = fetch_pitch_level(year)
+            team_map = extract_batter_teams(pitch_df)
+            rolling_data = compute_rolling_metrics(pitch_df)
+        except Exception as e:
+            print(f"  [WARN] No pitch data: {e}")
+
+        output = build_output(expected_df, ev_df, rolling_data, team_map, year)
+
+    # ---- save ----
     with open(OUTPUT_FILE, "w") as f:
         json.dump(output, f, indent=2, default=str)
 
@@ -472,8 +531,8 @@ def main():
     print(f"       Mode: {output['mode']}")
     print(f"       Season: {output['season']}")
     if output["mode"] == "transition":
-        print(f"       Fallback season: {output['fallback_season']}")
-        print(f"       New season players: {output['current_season_players']}")
+        print(f"       Fallback: {output['fallback_season']}")
+        print(f"       New-season stats: {output['current_season_players']}")
     print(f"       Generated: {output['generated_at']}")
 
 

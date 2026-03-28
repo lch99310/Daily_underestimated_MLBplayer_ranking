@@ -234,6 +234,11 @@ td.stat-cell{font-family:var(--font-mono);font-size:.8rem;color:var(--text-secon
 .transition-banner-text strong{color:var(--text-primary)}
 .transition-banner .legend-row{display:flex;gap:16px;margin-top:8px;flex-wrap:wrap}
 .transition-banner .legend-item{display:flex;align-items:center;gap:5px;font-size:.78rem}
+
+/* CROSS-SEASON DETAIL */
+.detail-cross-season{font-family:var(--font-mono);font-size:.72rem;color:var(--text-muted);background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:6px 10px;margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.detail-cross-season .cs-label{color:var(--accent-gold);font-weight:600;letter-spacing:.5px;text-transform:uppercase;font-size:.65rem}
+.detail-cross-season .cs-part{display:inline-flex;align-items:center;gap:3px}
 </style>
 </head>
 <body>
@@ -360,6 +365,12 @@ td.stat-cell{font-family:var(--font-mono);font-size:.8rem;color:var(--text-secon
       <p>The core metric of this platform. Since xwOBA represents what a player's production <em>should</em> be based on contact quality, a large negative gap (wOBA &minus; xwOBA &lt; 0) means the player's actual results are significantly worse than expected. Historically, these gaps tend to regress &mdash; the larger the negative diff, the higher the probability that the player's wOBA will rebound toward xwOBA. This platform identifies exactly those players: batters whose current results are most likely to improve, making them the most underestimated.</p>
       <div class="formula">diff_rolling_OBA = rolling_wOBA(N PA) &minus; rolling_xwOBA(N PA)<br>Negative = underestimated &rarr; likely to rebound</div>
     </div>
+    <div class="method-card">
+      <h3>Cross-Season Rolling</h3>
+      <p>At the start of each new MLB season, no player has enough plate appearances for meaningful rolling windows. Instead of showing a blank page or stale data, this platform uses <strong>cross-season rolling windows</strong> that physically span the season boundary. For example, if a player has 20 PA in the new season and you select the 50 PA window, the calculation uses the last 30 PA from the previous season plus 20 PA from the new season.</p>
+      <p style="margin-top:8px">As the new season progresses and players accumulate more PA, old-season data naturally rolls out of the window. Once all PAs in a window belong to the new season, the transition is seamless. When 10+ players reach 50 PA entirely within the new season, the system fully switches to single-season mode.</p>
+      <div class="formula">50 PA window = (50 &minus; new_season_PA) from prev season + new_season_PA from current season<br>Updates daily &rarr; old season data gradually rolls out</div>
+    </div>
   </div>
 </section>
 
@@ -443,10 +454,11 @@ function getTrend(p, win) {
     return {
       woba: p.rolling[win].trend_woba || [],
       xwoba: p.rolling[win].trend_xwoba || [],
-      diff: p.rolling[win].trend_diff || []
+      diff: p.rolling[win].trend_diff || [],
+      seasons: p.rolling[win].trend_seasons || []
     };
   }
-  return { woba: [], xwoba: [], diff: [] };
+  return { woba: [], xwoba: [], diff: [], seasons: [] };
 }
 
 function hasWindow(p, win) {
@@ -532,16 +544,15 @@ function renderEmptyState() {
 function renderTransitionBanner() {
   const banner = document.createElement('div');
   banner.className = 'transition-banner';
-  const nCurr = META.current_season_players;
-  const nTotal = PLAYERS.length;
-  const nPrev = nTotal - nCurr;
+  const nCross = PLAYERS.filter(p => p.cross_season).length;
   banner.innerHTML = `
     <div class="transition-banner-icon">&#9432;</div>
     <div class="transition-banner-text">
-      <strong>Season Transition Mode</strong> — The ${META.season} season has just started. Showing <strong>${nCurr}</strong> player${nCurr !== 1 ? 's' : ''} with ${META.min_pa}+ PA from the new season, blended with <strong>${nPrev}</strong> player${nPrev !== 1 ? 's' : ''} from the ${META.fallback_season} season as a reference baseline. Once ${META.transition_threshold}+ players reach ${META.min_pa} PA in the new season, the view will automatically switch to ${META.season} data only.
+      <strong>Cross-Season Rolling Mode</strong> — The ${META.season} season has just started. Rolling windows (50/100/250 PA) span across the ${META.fallback_season}&ndash;${META.season} season boundary: each player's window combines their latest PAs from both seasons. As ${META.season} plate appearances accumulate, older ${META.fallback_season} data naturally rolls out. Once ${META.transition_threshold}+ players reach ${META.min_pa} PA entirely in ${META.season}, the view switches to new-season-only data.
       <div class="legend-row">
         <div class="legend-item"><span class="season-badge current">'${String(META.season).slice(-2)}</span> New season data</div>
-        <div class="legend-item"><span class="season-badge fallback">'${String(META.fallback_season).slice(-2)}</span> Previous season (reference)</div>
+        <div class="legend-item"><span class="season-badge fallback">'${String(META.fallback_season).slice(-2)}</span> Previous season data</div>
+        <div class="legend-item" style="color:var(--text-muted)">${nCross} player${nCross !== 1 ? 's' : ''} with cross-season windows</div>
       </div>
     </div>
   `;
@@ -683,7 +694,10 @@ function renderTable() {
   }).join('');
 
   const withWindow = filtered.filter(p => hasWindow(p, activeWindow)).length;
-  document.getElementById('table-info').textContent = `${filtered.length} players shown \xB7 ${withWindow} with ${activeWindow} PA rolling data \xB7 Sorted by ${sortKey} ${sortDir === 1 ? '\u25B2' : '\u25BC'}`;
+  const crossCount = META.mode === 'transition' ? filtered.filter(p => p.cross_season).length : 0;
+  let infoText = `${filtered.length} players shown \xB7 ${withWindow} with ${activeWindow} PA rolling data \xB7 Sorted by ${sortKey} ${sortDir === 1 ? '\u25B2' : '\u25BC'}`;
+  if (crossCount > 0) infoText += ` \xB7 ${crossCount} cross-season`;
+  document.getElementById('table-info').textContent = infoText;
 }
 
 function setupSort() {
@@ -752,17 +766,33 @@ function renderDetailCard(p) {
 
   const seasonInfo = META.mode === 'transition' && p.data_season
     ? (p.data_season === META.season
-      ? `<span class="season-badge current">${p.data_season} New Season</span>`
-      : `<span class="season-badge fallback">${p.data_season} Season (Reference)</span>`)
+      ? `<span class="season-badge current">${p.data_season} Season</span>`
+      : `<span class="season-badge fallback">${p.data_season} Season</span>`)
     : '';
+
+  // Cross-season PA breakdown
+  let crossSeasonHtml = '';
+  if (META.mode === 'transition' && p.cross_season && p.new_season_pa !== undefined) {
+    const totalRolling = p.total_pa_events || p.pa;
+    const prevPa = totalRolling - p.new_season_pa;
+    crossSeasonHtml = `<div class="detail-cross-season">
+      <span class="cs-label">Rolling Window</span>
+      <span class="cs-part"><span class="season-badge fallback">'${String(META.fallback_season).slice(-2)}</span> ${prevPa} PA</span>
+      <span style="color:var(--text-muted)">+</span>
+      <span class="cs-part"><span class="season-badge current">'${String(META.season).slice(-2)}</span> ${p.new_season_pa} PA</span>
+      <span style="color:var(--text-muted)">=</span>
+      <span style="color:var(--text-secondary)">${totalRolling} total PA</span>
+    </div>`;
+  }
 
   document.getElementById('detail-info').innerHTML = `
     <div class="detail-name">${p.name}${seasonInfo}</div>
     <div class="detail-meta">
       <span class="team-badge">${p.team}</span>
-      <span>${p.pa} PA</span>
+      <span>${p.pa} PA (${p.data_season || META.season})</span>
       <span>AVG ${fmt(p.batting_avg, 3)}</span>
     </div>
+    ${crossSeasonHtml}
     <a class="detail-savant-link" href="${savantUrl}" target="_blank">View on Baseball Savant &#x2197;</a>
     <div class="detail-window-toggle">${windowBtns}</div>
     <div class="woba-compare">
@@ -830,6 +860,18 @@ function renderTrendChart(p, win) {
 
   const periods = trend.woba.map((_, i) => `${i + 1}`);
 
+  // Find season boundary for cross-season visualization
+  let seasonBoundaryIdx = -1;
+  if (trend.seasons.length > 1) {
+    const firstSeason = trend.seasons[0];
+    for (let i = 1; i < trend.seasons.length; i++) {
+      if (trend.seasons[i] !== firstSeason) {
+        seasonBoundaryIdx = i;
+        break;
+      }
+    }
+  }
+
   // Compute diff trend from woba and xwoba if not provided
   const diffTrend = trend.diff.length === trend.woba.length
     ? trend.diff
@@ -837,7 +879,7 @@ function renderTrendChart(p, win) {
 
   trendChart.setOption({
     backgroundColor: 'transparent',
-    title: { text: `Rolling ${win} PA Trend` + (META.mode === 'transition' && p.data_season ? ` (${p.data_season} Season)` : ''), left: 10, top: 4, textStyle: { color: '#8a9bb8', fontSize: 13, fontFamily: 'Oswald', fontWeight: 400 } },
+    title: { text: `Rolling ${win} PA Trend` + (META.mode === 'transition' && p.cross_season ? ` (${META.fallback_season}\u2192${META.season})` : META.mode === 'transition' && p.data_season ? ` (${p.data_season})` : ''), left: 10, top: 4, textStyle: { color: '#8a9bb8', fontSize: 13, fontFamily: 'Oswald', fontWeight: 400 } },
     tooltip: {
       trigger: 'axis', backgroundColor: '#0f1f38', borderColor: '#1a2d4d',
       textStyle: { color: '#e8ecf2', fontFamily: 'Source Sans 3', fontSize: 12 },
@@ -874,7 +916,13 @@ function renderTrendChart(p, win) {
       {
         name: 'xwOBA', type: 'line', data: trend.xwoba, smooth: true, yAxisIndex: 0,
         lineStyle: { color: '#f0c040', width: 2 }, itemStyle: { color: '#f0c040' }, symbol: 'circle', symbolSize: 4,
-        areaStyle: { color: 'rgba(240,192,64,0.06)' }
+        areaStyle: { color: 'rgba(240,192,64,0.06)' },
+        markLine: seasonBoundaryIdx > 0 ? {
+          data: [{ xAxis: String(seasonBoundaryIdx) }],
+          lineStyle: { color: 'rgba(240,192,64,0.55)', type: 'dashed', width: 1.5 },
+          label: { show: true, position: 'insideStartTop', formatter: `'${String(META.season).slice(-2)} Season \u2192`, color: '#f0c040', fontSize: 10, fontFamily: 'JetBrains Mono' },
+          symbol: 'none', silent: true
+        } : undefined
       },
       {
         name: 'wOBA', type: 'line', data: trend.woba, smooth: true, yAxisIndex: 0,
