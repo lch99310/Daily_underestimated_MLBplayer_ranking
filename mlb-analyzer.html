@@ -560,10 +560,11 @@ function renderTransitionBanner() {
 }
 
 function seasonBadge(p) {
-  if (META.mode !== 'transition' || !p.data_season) return '';
-  const isCurrent = p.data_season === META.season;
-  const cls = isCurrent ? 'current' : 'fallback';
-  return `<span class="season-badge ${cls}">'${String(p.data_season).slice(-2)}</span>`;
+  if (META.mode !== 'transition') return '';
+  const hasNewData = p.new_season_pa && p.new_season_pa > 0;
+  const displaySeason = hasNewData ? META.season : META.fallback_season;
+  const cls = hasNewData ? 'current' : 'fallback';
+  return `<span class="season-badge ${cls}">'${String(displaySeason).slice(-2)}</span>`;
 }
 
 // ═══════════════════════════════════════════
@@ -764,10 +765,11 @@ function renderDetailCard(p) {
 
   const savantUrl = `https://baseballsavant.mlb.com/savant-player/${p.player_id}`;
 
-  const seasonInfo = META.mode === 'transition' && p.data_season
-    ? (p.data_season === META.season
-      ? `<span class="season-badge current">${p.data_season} Season</span>`
-      : `<span class="season-badge fallback">${p.data_season} Season</span>`)
+  const hasNewData = p.new_season_pa && p.new_season_pa > 0;
+  const seasonInfo = META.mode === 'transition'
+    ? (hasNewData
+      ? `<span class="season-badge current">${META.season} Season</span>`
+      : `<span class="season-badge fallback">${META.fallback_season} Season</span>`)
     : '';
 
   // Cross-season PA breakdown
@@ -789,7 +791,7 @@ function renderDetailCard(p) {
     <div class="detail-name">${p.name}${seasonInfo}</div>
     <div class="detail-meta">
       <span class="team-badge">${p.team}</span>
-      <span>${p.pa} PA (${p.data_season || META.season})</span>
+      <span>${p.pa} PA${META.mode === 'transition' && p.data_season ? ' (' + p.data_season + ')' : ''}</span>
       <span>AVG ${fmt(p.batting_avg, 3)}</span>
     </div>
     ${crossSeasonHtml}
