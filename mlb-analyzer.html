@@ -115,7 +115,8 @@ body{font-family:var(--font-body);background:var(--bg-deepest);color:var(--text-
 .pa-toggle button.disabled{opacity:0.3;cursor:not-allowed}
 .pa-toggle button.disabled:hover{color:var(--text-muted)}
 
-.table-wrap{overflow-x:auto;border-radius:var(--radius-md);border:1px solid var(--border-subtle);background:var(--bg-card)}
+.table-wrap{overflow-x:auto;overflow-y:auto;max-height:1260px;border-radius:var(--radius-md);border:1px solid var(--border-subtle);background:var(--bg-card)}
+.table-wrap thead{position:sticky;top:0;z-index:2}
 table{width:100%;border-collapse:collapse;font-size:.82rem}
 thead th{font-family:var(--font-body);font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);padding:12px 14px;text-align:left;border-bottom:1px solid var(--border-mid);position:sticky;top:0;background:var(--bg-card);cursor:pointer;white-space:nowrap;user-select:none;transition:var(--transition-fast)}
 thead th:hover{color:var(--text-primary)}
@@ -793,6 +794,7 @@ function renderDetailCard(p) {
       <span class="team-badge">${p.team}</span>
       <span>${p.pa} PA${META.mode === 'transition' && p.data_season ? ' (' + p.data_season + ')' : ''}</span>
       <span>AVG ${fmt(p.batting_avg, 3)}</span>
+      ${p.last_pa_date ? `<span style="color:var(--text-muted)">Last PA: ${new Date(p.last_pa_date + 'T00:00:00').toLocaleDateString('en-US', {month:'short',day:'numeric'})}</span>` : ''}
     </div>
     ${crossSeasonHtml}
     <a class="detail-savant-link" href="${savantUrl}" target="_blank">View on Baseball Savant &#x2197;</a>
@@ -860,7 +862,9 @@ function renderTrendChart(p, win) {
     return;
   }
 
-  const periods = trend.woba.map((_, i) => `${i + 1}`);
+  // X-axis: PA number (1 per data point, matching real PA count)
+  const nPoints = trend.woba.length;
+  const paLabels = trend.woba.map((_, i) => `${i + 1}`);
 
   // Find season boundary for cross-season visualization
   let seasonBoundaryIdx = -1;
@@ -879,14 +883,18 @@ function renderTrendChart(p, win) {
     ? trend.diff
     : trend.woba.map((w, i) => Math.round((w - trend.xwoba[i]) * 1000) / 1000);
 
+  // Dynamic symbol: hide dots when many points, show when few
+  const showSymbol = nPoints <= 60;
+  const symSize = nPoints <= 30 ? 4 : 3;
+
   trendChart.setOption({
     backgroundColor: 'transparent',
-    title: { text: `Rolling ${win} PA Trend` + (META.mode === 'transition' && p.cross_season ? ` (${META.fallback_season}\u2192${META.season})` : META.mode === 'transition' && p.data_season ? ` (${p.data_season})` : ''), left: 10, top: 4, textStyle: { color: '#8a9bb8', fontSize: 13, fontFamily: 'Oswald', fontWeight: 400 } },
+    title: { text: `Rolling ${win} PA Trend (${nPoints} pts)` + (META.mode === 'transition' && p.cross_season ? ` \u2014 ${META.fallback_season}\u2192${META.season}` : ''), left: 10, top: 4, textStyle: { color: '#8a9bb8', fontSize: 13, fontFamily: 'Oswald', fontWeight: 400 } },
     tooltip: {
       trigger: 'axis', backgroundColor: '#0f1f38', borderColor: '#1a2d4d',
       textStyle: { color: '#e8ecf2', fontFamily: 'Source Sans 3', fontSize: 12 },
       formatter: function(params) {
-        let tip = `<strong>Period ${params[0].name}</strong><br>`;
+        let tip = `<strong>PA ${params[0].name} / ${nPoints}</strong><br>`;
         params.forEach(s => {
           tip += `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:4px"></span>${s.seriesName}: ${Number(s.value).toFixed(3)}<br>`;
         });
@@ -899,7 +907,15 @@ function renderTrendChart(p, win) {
       top: 4, right: 10
     },
     grid: { top: 44, right: 20, bottom: 30, left: 50 },
-    xAxis: { type: 'category', data: periods, axisLine: { lineStyle: { color: '#1a2d4d' } }, axisLabel: { color: '#556a8a', fontSize: 10 } },
+    xAxis: {
+      type: 'category', data: paLabels,
+      axisLine: { lineStyle: { color: '#1a2d4d' } },
+      axisLabel: {
+        color: '#556a8a', fontSize: 10,
+        interval: nPoints <= 50 ? 'auto' : Math.floor(nPoints / 20)
+      },
+      axisTick: { show: nPoints <= 100 }
+    },
     yAxis: [
       {
         type: 'value',
@@ -917,7 +933,8 @@ function renderTrendChart(p, win) {
     series: [
       {
         name: 'xwOBA', type: 'line', data: trend.xwoba, smooth: true, yAxisIndex: 0,
-        lineStyle: { color: '#f0c040', width: 2 }, itemStyle: { color: '#f0c040' }, symbol: 'circle', symbolSize: 4,
+        lineStyle: { color: '#f0c040', width: 2 }, itemStyle: { color: '#f0c040' },
+        symbol: 'circle', symbolSize: symSize, showSymbol: showSymbol,
         areaStyle: { color: 'rgba(240,192,64,0.06)' },
         markLine: seasonBoundaryIdx > 0 ? {
           data: [{ xAxis: String(seasonBoundaryIdx) }],
@@ -928,7 +945,8 @@ function renderTrendChart(p, win) {
       },
       {
         name: 'wOBA', type: 'line', data: trend.woba, smooth: true, yAxisIndex: 0,
-        lineStyle: { color: '#3b82f6', width: 2.5 }, itemStyle: { color: '#3b82f6' }, symbol: 'circle', symbolSize: 4,
+        lineStyle: { color: '#3b82f6', width: 2.5 }, itemStyle: { color: '#3b82f6' },
+        symbol: 'circle', symbolSize: symSize, showSymbol: showSymbol,
         areaStyle: { color: 'rgba(59,130,246,0.06)' }
       },
       {

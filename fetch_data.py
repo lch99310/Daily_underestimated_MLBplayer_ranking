@@ -31,7 +31,6 @@ OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "player_data.json")
 
 ROLLING_WINDOWS = [50, 100, 250]
-TREND_POINTS = 20
 MIN_PA = 50
 TRANSITION_THRESHOLD = 10  # new-season players needed to exit transition
 
@@ -164,7 +163,14 @@ def compute_rolling_metrics(pitch_df):
         if total_pa < MIN_PA:
             continue
 
-        batter_result = {"total_pa": total_pa, "windows": {}}
+        # Record last PA date
+        last_date = batter_pa["game_date"].iloc[-1]
+        if hasattr(last_date, "strftime"):
+            batter_result_date = last_date.strftime("%Y-%m-%d")
+        else:
+            batter_result_date = str(last_date)[:10]
+
+        batter_result = {"total_pa": total_pa, "last_pa_date": batter_result_date, "windows": {}}
 
         # Season tracking
         if has_season_col:
@@ -197,18 +203,21 @@ def compute_rolling_metrics(pitch_df):
             valid_woba = rolling_woba.dropna()
             valid_xwoba = rolling_xwoba.dropna()
 
-            if len(valid_woba) >= TREND_POINTS:
-                indices = np.linspace(0, len(valid_woba) - 1, TREND_POINTS, dtype=int)
-                trend_woba = [round(float(valid_woba.iloc[i]), 3) for i in indices]
-                trend_xwoba = [round(float(valid_xwoba.iloc[i]), 3) for i in indices]
-            elif len(valid_woba) > 0:
+            # Keep the last `window` valid rolling values so the chart's
+            # data-point count matches its PA label (50 PA → 50 points, etc.)
+            if len(valid_woba) > window:
+                valid_woba = valid_woba.iloc[-window:]
+                valid_xwoba = valid_xwoba.iloc[-window:]
+
+            # Store all kept points at full resolution
+            if len(valid_woba) > 0:
                 trend_woba = [round(float(v), 3) for v in valid_woba.tolist()]
                 trend_xwoba = [round(float(v), 3) for v in valid_xwoba.tolist()]
-                indices = list(range(len(valid_woba)))
             else:
                 trend_woba = []
                 trend_xwoba = []
-                indices = []
+
+            valid_idx = valid_woba.index.values if len(valid_woba) > 0 else []
 
             win_result = {
                 "rolling_woba": round(float(latest_woba), 3) if latest_woba is not None else None,
@@ -220,10 +229,8 @@ def compute_rolling_metrics(pitch_df):
             }
 
             # Cross-season: record which season each trend point belongs to
-            if has_season_col and len(indices) > 0:
-                valid_idx = valid_woba.index.values  # original PA indices
-                sampled_pa_idx = [valid_idx[i] for i in indices]
-                win_result["trend_seasons"] = [int(season_arr[pi]) for pi in sampled_pa_idx]
+            if has_season_col and len(valid_idx) > 0:
+                win_result["trend_seasons"] = [int(season_arr[pi]) for pi in valid_idx]
 
             batter_result["windows"][str(window)] = win_result
 
@@ -286,6 +293,8 @@ def build_player(row, ev_df, rolling_data, team_map):
         rd = rolling_data[player_id]
         player["rolling"] = rd["windows"]
         player["total_pa_events"] = rd["total_pa"]
+        if "last_pa_date" in rd:
+            player["last_pa_date"] = rd["last_pa_date"]
 
         for w in [100, 50, 250]:
             wkey = str(w)
