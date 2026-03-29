@@ -456,10 +456,11 @@ function getTrend(p, win) {
       woba: p.rolling[win].trend_woba || [],
       xwoba: p.rolling[win].trend_xwoba || [],
       diff: p.rolling[win].trend_diff || [],
-      seasons: p.rolling[win].trend_seasons || []
+      seasons: p.rolling[win].trend_seasons || [],
+      dates: p.rolling[win].trend_dates || []
     };
   }
-  return { woba: [], xwoba: [], diff: [], seasons: [] };
+  return { woba: [], xwoba: [], diff: [], seasons: [], dates: [] };
 }
 
 function hasWindow(p, win) {
@@ -862,9 +863,10 @@ function renderTrendChart(p, win) {
     return;
   }
 
-  // X-axis: PA number (1 per data point, matching real PA count)
+  // X-axis: use dates if available, else PA numbers
   const nPoints = trend.woba.length;
-  const paLabels = trend.woba.map((_, i) => `${i + 1}`);
+  const hasDates = trend.dates.length === nPoints;
+  const paLabels = hasDates ? trend.dates : trend.woba.map((_, i) => `${i + 1}`);
 
   // Find season boundary for cross-season visualization
   let seasonBoundaryIdx = -1;
@@ -894,7 +896,9 @@ function renderTrendChart(p, win) {
       trigger: 'axis', backgroundColor: '#0f1f38', borderColor: '#1a2d4d',
       textStyle: { color: '#e8ecf2', fontFamily: 'Source Sans 3', fontSize: 12 },
       formatter: function(params) {
-        let tip = `<strong>PA ${params[0].name} / ${nPoints}</strong><br>`;
+        const idx = params[0].dataIndex;
+        const dateLabel = hasDates ? params[0].name : '';
+        let tip = `<strong>PA ${idx + 1} / ${nPoints}${dateLabel ? ' \xB7 ' + dateLabel : ''}</strong><br>`;
         params.forEach(s => {
           tip += `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${s.color};margin-right:4px"></span>${s.seriesName}: ${Number(s.value).toFixed(3)}<br>`;
         });
@@ -906,13 +910,14 @@ function renderTrendChart(p, win) {
       textStyle: { color: '#8a9bb8', fontFamily: 'Source Sans 3', fontSize: 11 },
       top: 4, right: 10
     },
-    grid: { top: 44, right: 20, bottom: 30, left: 50 },
+    grid: { top: 44, right: 20, bottom: hasDates && nPoints > 30 ? 55 : 30, left: 50 },
     xAxis: {
       type: 'category', data: paLabels,
       axisLine: { lineStyle: { color: '#1a2d4d' } },
       axisLabel: {
-        color: '#556a8a', fontSize: 10,
-        interval: nPoints <= 50 ? 'auto' : Math.floor(nPoints / 20)
+        color: '#556a8a', fontSize: 9,
+        interval: Math.max(0, Math.floor(nPoints / 15) - 1),
+        rotate: hasDates && nPoints > 30 ? 35 : 0
       },
       axisTick: { show: nPoints <= 100 }
     },

@@ -219,6 +219,12 @@ def compute_rolling_metrics(pitch_df):
 
             valid_idx = valid_woba.index.values if len(valid_woba) > 0 else []
 
+            # Collect game dates for each trend point
+            trend_dates = []
+            for pi in valid_idx:
+                d = batter_pa["game_date"].iloc[pi]
+                trend_dates.append(d.strftime("%m/%d") if hasattr(d, "strftime") else str(d)[5:10])
+
             win_result = {
                 "rolling_woba": round(float(latest_woba), 3) if latest_woba is not None else None,
                 "rolling_xwoba": round(float(latest_xwoba), 3) if latest_xwoba is not None else None,
@@ -226,6 +232,7 @@ def compute_rolling_metrics(pitch_df):
                 "trend_woba": trend_woba,
                 "trend_xwoba": trend_xwoba,
                 "trend_diff": [round(float(trend_woba[i] - trend_xwoba[i]), 3) for i in range(len(trend_woba))],
+                "trend_dates": trend_dates,
             }
 
             # Cross-season: record which season each trend point belongs to
