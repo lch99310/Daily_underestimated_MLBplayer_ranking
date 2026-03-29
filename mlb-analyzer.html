@@ -942,7 +942,7 @@ function renderTrendChart(p, win) {
         symbol: 'circle', symbolSize: symSize, showSymbol: showSymbol,
         areaStyle: { color: 'rgba(240,192,64,0.06)' },
         markLine: seasonBoundaryIdx > 0 ? {
-          data: [{ xAxis: paLabels[seasonBoundaryIdx] }],
+          data: [{ xAxis: seasonBoundaryIdx }],
           lineStyle: { color: 'rgba(240,192,64,0.55)', type: 'dashed', width: 1.5 },
           label: { show: true, position: 'insideStartTop', formatter: `'${String(META.season).slice(-2)} Season \u2192`, color: '#f0c040', fontSize: 10, fontFamily: 'JetBrains Mono' },
           symbol: 'none', silent: true
