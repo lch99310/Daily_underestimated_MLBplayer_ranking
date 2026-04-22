@@ -188,17 +188,30 @@ def compute_rolling_metrics(pitch_df):
             if total_pa < window:
                 continue
 
-            woba_num = batter_pa["woba_value"].rolling(window=window, min_periods=window).sum()
-            woba_den = batter_pa["woba_denom"].rolling(window=window, min_periods=window).sum()
-            xwoba_num = batter_pa["xwoba_value"].rolling(window=window, min_periods=window).sum()
+            # Headline rolling values use the strict window so the latest
+            # value is a true `window`-PA average.
+            strict_woba_num = batter_pa["woba_value"].rolling(window=window, min_periods=window).sum()
+            strict_woba_den = batter_pa["woba_denom"].rolling(window=window, min_periods=window).sum()
+            strict_xwoba_num = batter_pa["xwoba_value"].rolling(window=window, min_periods=window).sum()
 
-            rolling_woba = woba_num / woba_den
-            rolling_xwoba = xwoba_num / woba_den
-            rolling_diff = rolling_woba - rolling_xwoba
+            strict_rolling_woba = strict_woba_num / strict_woba_den
+            strict_rolling_xwoba = strict_xwoba_num / strict_woba_den
+            strict_rolling_diff = strict_rolling_woba - strict_rolling_xwoba
 
-            latest_woba = rolling_woba.iloc[-1] if not pd.isna(rolling_woba.iloc[-1]) else None
-            latest_xwoba = rolling_xwoba.iloc[-1] if not pd.isna(rolling_xwoba.iloc[-1]) else None
-            latest_diff = rolling_diff.iloc[-1] if not pd.isna(rolling_diff.iloc[-1]) else None
+            latest_woba = strict_rolling_woba.iloc[-1] if not pd.isna(strict_rolling_woba.iloc[-1]) else None
+            latest_xwoba = strict_rolling_xwoba.iloc[-1] if not pd.isna(strict_rolling_xwoba.iloc[-1]) else None
+            latest_diff = strict_rolling_diff.iloc[-1] if not pd.isna(strict_rolling_diff.iloc[-1]) else None
+
+            # Trend uses min_periods=1 so the chart can fill up to `window`
+            # bars even when total_pa is between `window` and `2*window-1`
+            # (the leftmost bars use a partial trailing window — standard
+            # warm-up for rolling visualizations).
+            woba_num = batter_pa["woba_value"].rolling(window=window, min_periods=1).sum()
+            woba_den = batter_pa["woba_denom"].rolling(window=window, min_periods=1).sum()
+            xwoba_num = batter_pa["xwoba_value"].rolling(window=window, min_periods=1).sum()
+
+            rolling_woba = (woba_num / woba_den).where(woba_den > 0)
+            rolling_xwoba = (xwoba_num / woba_den).where(woba_den > 0)
 
             valid_woba = rolling_woba.dropna()
             valid_xwoba = rolling_xwoba.dropna()
